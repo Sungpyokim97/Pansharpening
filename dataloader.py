@@ -1,9 +1,11 @@
-# import os
-# from PIL import Image
-# from torch.utils.data import Dataset, DataLoader
+import os
+from PIL import Image
+from torch.utils.data import Dataset, DataLoader
 # from transform import Diff_transform
-# import random
-# import numpy as np
+import random
+import numpy as np
+import tifffile as tiff
+import cv2
 
 # def get_patch(lr, hr, patch_size, scale):
 #     ih, iw, c = lr.shape
@@ -128,7 +130,7 @@ def Preprocess(ms, pan, mspan):
 
     up_ms = cv2.resize(ms, (int(H),int(W)), interpolation=cv2.INTER_CUBIC)
 
-    ms, pan, mspan = random_crop(up_ms, pan, mspan, (256,256))
+    ms, pan, mspan = random_crop(up_ms, pan, mspan, (128,128))
     # if C == 8:
     #     ms = ms[:, :, (4, 2, 1, 6)]
     # lrms = ms.resize((int(ms.shape[0]/4),int(ms.shape[1]/4)), Image.BICUBIC)
@@ -171,14 +173,13 @@ class TrainDataset(Dataset):
         self.ms_list = get_files_in_subdirectories_train(root, dataset_path, 'MUL')
         self.pan_list = get_files_in_subdirectories_train(root, dataset_path, 'PAN')
         self.mspan_list = get_files_in_subdirectories_train(root, dataset_path, 'MUL-PanSharpen')
-        
+    
     def __getitem__(self, index):
         # ms = Image.open(self.root+'/'+self.ms_path+'/'+self.ms_list[index])
         # pan = Image.open(self.root+'/'+self.pan_path+'/'+self.pan_list[index])
         ms = tiff.imread(self.ms_list[index])
         pan = tiff.imread(self.pan_list[index])
         mspan = tiff.imread(self.mspan_list[index])
-
         ms, pan, mspan = Preprocess(ms, pan, mspan)
         return ms, pan, mspan
     
@@ -210,6 +211,29 @@ class TestDataset(Dataset):
         return len(self.ms_list)
     
 # 업데이트 중인 부분 argument 추가될 가능성 다분함
+# total real train set ver
+    
+# def WV3_PS_Dataloader(root, batch_size):
+#     # train_dataset = DiffDataset(data_dir, mode='train',patch_size=patch_size, transform=Diff_transform)
+#     # val_dataset = DiffDataset(data_dir, mode='val',patch_size=patch_size, transform=Diff_transform)
+#     # test_dataset = DiffTestDataset(data_dir, mode='test',data=test_data, transform=None)
+#     train_dataset_path = 'WorldView3_Original_Train/'
+#     val_dataset_path = 'WorldView3_Original_Test/'
+#     test_dataset_path = 'WorldView3_Original_Test/'
+#     regions = ['AOI_4_Shanghai_Bldg_Test_public', 'AOI_4_Shanghai_Bldg_Test_public']
+
+#     train_dataset = TrainDataset(root, train_dataset_path)
+#     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+#     val_dataset = TestDataset(root, val_dataset_path, region_list= regions)
+#     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
+#     test_dataset = TestDataset(root, test_dataset_path, region_list= regions)
+#     test_loader = DataLoader(test_dataset_path, batch_size=batch_size, shuffle=True)    
+#     # val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+#     # test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+#     # return train_loader, val_loader, test_loader
+#     return train_loader, val_loader, test_loader
+
+# lite trainset ver
 def WV3_PS_Dataloader(root, batch_size):
     # train_dataset = DiffDataset(data_dir, mode='train',patch_size=patch_size, transform=Diff_transform)
     # val_dataset = DiffDataset(data_dir, mode='val',patch_size=patch_size, transform=Diff_transform)
@@ -217,9 +241,32 @@ def WV3_PS_Dataloader(root, batch_size):
     train_dataset_path = 'WorldView3_Original_Train/'
     val_dataset_path = 'WorldView3_Original_Test/'
     test_dataset_path = 'WorldView3_Original_Test/'
-    regions = ['AOI_4_Shanghai_Bldg_Test_public', 'AOI_4_Shanghai_Bldg_Test_public']
 
-    train_dataset = TrainDataset(root, train_dataset_path)
+    train_dataset = TestDataset(root, train_dataset_path, region_list=train_regions)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_dataset = TestDataset(root, val_dataset_path, region_list= regions)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
+    test_dataset = TestDataset(root, test_dataset_path, region_list= regions)
+    test_loader = DataLoader(test_dataset_path, batch_size=batch_size, shuffle=True)    
+    # val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+    # test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+    # return train_loader, val_loader, test_loader
+    return train_loader, val_loader, test_loader
+
+def K3A_PS_Dataloader(root, batch_size):
+    # train_dataset = DiffDataset(data_dir, mode='train',patch_size=patch_size, transform=Diff_transform)
+    # val_dataset = DiffDataset(data_dir, mode='val',patch_size=patch_size, transform=Diff_transform)
+    # test_dataset = DiffTestDataset(data_dir, mode='test',data=test_data, transform=None)
+    train_dataset_path = 'WorldView3_Original_Train/'
+    val_dataset_path = 'WorldView3_Original_Test/'
+    test_dataset_path = 'WorldView3_Original_Test/'
+
+    # '2_Vegas' '3_Paris' '4_Shanghai' '5_Khartoum'
+    city = '2_Vegas'
+    train_regions = [f'AOI_{city}_Bldg_Train', f'AOI_{city}_Roads_Train']
+    regions = [f'AOI_{city}_Bldg_Test_public', f'AOI_{city}_Roads_Test_Public']
+
+    train_dataset = TestDataset(root, train_dataset_path, region_list=train_regions)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataset = TestDataset(root, val_dataset_path, region_list= regions)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
@@ -236,7 +283,10 @@ if __name__ == '__main__':
     root = '/media/ksp/SH_HDD/Pan-Sharpening'
     train_dataset_path = 'WorldView3_Original_Train/'
     test_dataset_path = 'WorldView3_Original_Test/'
-    regions = ['AOI_4_Shanghai_Bldg_Test_public', 'AOI_4_Shanghai_Bldg_Test_public']
+    # '2_Vegas' '3_Paris' '4_Shanghai' '5_Khartoum'
+    city = '5_Khartoum'
+    train_regions = [f'AOI_{city}_Bldg_Train', f'AOI_{city}_Roads_Train']
+    test_regions = [f'AOI_{city}_Bldg_Test_public', f'AOI_{city}_Roads_Test_Public']
     # ms_directories = get_files_in_subdirectories(root, dataset_path, 'MUL')
     # pan_directories = get_files_in_subdirectories(root, dataset_path, 'PAN')
     # mspan_directories = get_files_in_subdirectories(root, dataset_path, 'MUL-PanSharpen')
@@ -255,6 +305,8 @@ if __name__ == '__main__':
     # loader = WV3_PS_Dataloader(root,16)
     # for a,b,c in loader[0]:
     #     print(a.shape, b.shape, c.shape)
-    train_dataset = TrainDataset(root, train_dataset_path)
-    test_dataset = TestDataset(root, test_dataset_path, region_list=regions)
+
+    # train_dataset = TrainDataset(root, train_dataset_path)
+    train_dataset = TestDataset(root, train_dataset_path, region_list=train_regions)
+    test_dataset = TestDataset(root, test_dataset_path, region_list=test_regions)
     print(len(train_dataset), len(test_dataset))

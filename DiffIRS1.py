@@ -8,12 +8,12 @@ import math
 
 class DiffIRS1(nn.Module):
     def __init__(self, 
-        n_encoder_res=6,         
+        n_encoder_res=4,         
         ms_channels=8,
         pan_channels=1, 
         dim = 24,
         # num_blocks = [4,6,6,8],
-        num_blocks = [2,2,4,4],
+        num_blocks = [4,1,1,1],
         num_refinement_blocks = 4,
         heads = [1,2,4,8],
         ffn_expansion_factor = 2.66,
@@ -35,7 +35,7 @@ class DiffIRS1(nn.Module):
         LayerNorm_type = LayerNorm_type,   ## Other option 'BiasFree'
         )
 
-        self.E = CPEN(n_feats=64, n_encoder_res=n_encoder_res)
+        self.E = CPEN(channels=ms_channels, n_feats=64, n_encoder_res=n_encoder_res)
 
         self.pixel_unshuffle = nn.PixelUnshuffle(4)
         self.training = False
@@ -50,11 +50,10 @@ class DiffIRS1(nn.Module):
 
             return sr, S1_IPR
         else:
-            IPRS1, s_z, _ = self.E(ms, pan, gt)
+            IPRS1, s_z, S1_IPR = self.E(ms, pan, gt)
             sr = self.G(ms, pan, IPRS1)
-
-            return sr
-
+            return sr, S1_IPR
+        
 class FeedForward(nn.Module):
     def __init__(self, dim, ffn_expansion_factor, bias):
         super(FeedForward, self).__init__()
@@ -80,7 +79,7 @@ class FeedForward(nn.Module):
         x = F.gelu(x1) * x2
         x = self.project_out(x)
         return x
-
+    
 class Attention(nn.Module):
     def __init__(self, dim, num_heads, bias):
         super(Attention, self).__init__()
@@ -99,7 +98,6 @@ class Attention(nn.Module):
         k_v1,k_v2=k_v.chunk(2, dim=1)
         
         x = x*k_v1+k_v2  
-
         qkv = self.qkv_dwconv(self.qkv(x))
         q,k,v = qkv.chunk(3, dim=1)   
         
@@ -110,10 +108,12 @@ class Attention(nn.Module):
         q = torch.nn.functional.normalize(q, dim=-1)
         k = torch.nn.functional.normalize(k, dim=-1)
 
-        attn = (q @ k.transpose(-2, -1)) * self.temperature
+        # attn = (q @ k.transpose(-2, -1)) * self.temperature
+        attn = (q.transpose(-2, -1) @ k)
         attn = attn.softmax(dim=-1)
 
-        out = (attn @ v)
+        # out = (attn @ v)
+        out = (v @ attn)
         
         out = rearrange(out, 'b head c (h w) -> b (head c) h w', head=self.num_heads, h=h, w=w)
 
@@ -188,19 +188,11 @@ class SpatialGate(nn.Module):
 
 # modified by sungpyo 
 class CPEN(nn.Module):
-    def __init__(self, n_feats = 64, n_encoder_res = 6, scale=4):
+    def __init__(self, channels = 8,  n_feats = 64, n_encoder_res = 6, scale=4):
         super(CPEN, self).__init__()
         self.scale=scale
-        if scale == 2:
-            E1=[nn.Conv2d(60, n_feats, kernel_size=3, padding=1),
-                nn.LeakyReLU(0.1, True)]
-        elif scale == 1:
-            E1=[nn.Conv2d(96, n_feats, kernel_size=3, padding=1),
-                nn.LeakyReLU(0.1, True)]
-        # scale == 4    in worldview3, 257ch -> 64ch
-        else:
-            E1=[nn.Conv2d(8*16 + 8*16 + 1*16, n_feats, kernel_size=3, padding=1),
-                nn.LeakyReLU(0.1, True)]
+        E1=[nn.Conv2d(channels*16 + channels*16 + 1*16, n_feats, kernel_size=3, padding=1),
+            nn.LeakyReLU(0.1, True)]
         E2=[
             ResBlock(
                 default_conv, n_feats, kernel_size=3
@@ -343,7 +335,6 @@ class Upsampler(nn.Module):
         x = self.body(x)
         return x
     
-    
 class Downsample(nn.Module):
     def __init__(self, n_feat):
         super(Downsample, self).__init__()
@@ -380,9 +371,11 @@ class DIRformer(nn.Module):
 
         super(DIRformer, self).__init__()
 
-        self.mixer = mixer.Simplemixer(ms_channels, pan_channels)
+        # self.mixer = mixer.Simplemixer(ms_channels, pan_channels)
+        self.mixer = mixer.PGCU(ms_channels, Vec = 256)
+        
 
-        self.patch_embed = OverlapPatchEmbed(in_c=8, embed_dim=dim)
+        self.patch_embed = OverlapPatchEmbed(in_c=ms_channels, embed_dim=dim)
         
         self.encoder_level1 = nn.Sequential(*[TransformerBlock(dim=dim, num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor, bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[0])])
         
@@ -399,25 +392,22 @@ class DIRformer(nn.Module):
         self.reduce_chan_level3 = nn.Conv2d(int(dim*2**3), int(dim*2**2), kernel_size=1, bias=bias)
         self.decoder_level3 = nn.Sequential(*[TransformerBlock(dim=int(dim*2**2), num_heads=heads[2], ffn_expansion_factor=ffn_expansion_factor, bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[2])])
 
-
         self.up3_2 = Upsample(int(dim*2**2)) ## From Level 3 to Level 2
         self.reduce_chan_level2 = nn.Conv2d(int(dim*2**2), int(dim*2**1), kernel_size=1, bias=bias)
         self.decoder_level2 = nn.Sequential(*[TransformerBlock(dim=int(dim*2**1), num_heads=heads[1], ffn_expansion_factor=ffn_expansion_factor, bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[1])])
         
         self.up2_1 = Upsample(int(dim*2**1))  ## From Level 2 to Level 1  (NO 1x1 conv to reduce channels)
-
         self.decoder_level1 = nn.Sequential(*[TransformerBlock(dim=int(dim*2**1), num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor, bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[0])])
-        
         self.refinement = nn.Sequential(*[TransformerBlock(dim=int(dim*2**1), num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor, bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_refinement_blocks)])
-            
         self.output = nn.Conv2d(int(dim*2**1), ms_channels, kernel_size=3, stride=1, padding=1, bias=bias)
 
     def forward(self, ms, pan ,k_v):
 
         ms_b, ms_c, ms_h, ms_w = ms.shape
         pan_b, pan_c, pan_h, pan_w = pan.shape
-        
-        ms_pan_simplemixed = self.mixer(ms, pan)
+        exp_list = [0]*ms_c
+        pan_expand = pan[:,exp_list,...]
+        ms_pan_simplemixed = self.mixer(pan, ms) + ms + pan_expand
         inp_enc_level1 = self.patch_embed(ms_pan_simplemixed)
 
         out_enc_level1,_ = self.encoder_level1([inp_enc_level1,k_v])
@@ -447,7 +437,7 @@ class DIRformer(nn.Module):
         
         out_dec_level1,_ = self.refinement([out_dec_level1,k_v])
 
-        out_dec_level1 = self.output(out_dec_level1) + ms
+        out_dec_level1 = self.output(out_dec_level1) + ms_pan_simplemixed
 
 
         return out_dec_level1

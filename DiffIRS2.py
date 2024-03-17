@@ -13,33 +13,37 @@ from DiffIRS1 import DiffIRS1, DIRformer
 
 class DiffIRS2(nn.Module):
     def __init__(self,         
-        n_encoder_res=6,         
-        ms_channels=8, 
-        pan_channels=1,
-        dim = 48,
-        num_blocks = [2,2,4,4],
-        num_refinement_blocks = 4, 
+        n_encoder_res=4,         
+        ms_channels=8,
+        pan_channels=1, 
+        dim = 24,
+        # num_blocks = [4,6,6,8],
+        num_blocks = [1,2,4,8],
+        num_refinement_blocks = 4,
         heads = [1,2,4,8],
         ffn_expansion_factor = 2.66,
         bias = False,
-        LayerNorm_type = 'WithBias',
+        LayerNorm_type = 'WithBias',   ## Other option 'BiasFree'
+        ## diffusion process
         n_denoise_res = 1, 
         linear_start= 0.1,
         linear_end= 0.99, 
-        timesteps = 4 ):
+        timesteps = 50):
         super(DiffIRS2, self).__init__()
 
         # Generator
-        self.G = DIRformer(ms_channels=ms_channels,
-                            pan_channels=pan_channels, 
-                            dim = dim,
-                            num_blocks = num_blocks, 
-                            num_refinement_blocks = num_refinement_blocks,
-                            heads = heads,
-                            ffn_expansion_factor = ffn_expansion_factor,
-                            bias = bias,
-                            LayerNorm_type = LayerNorm_type)   ## Other option 'BiasFree')
-        self.condition = CPEN2(n_feats=64, n_encoder_res=n_encoder_res)
+        self.G = DIRformer(        
+        ms_channels=ms_channels,
+        pan_channels=pan_channels,
+        dim = dim,
+        num_blocks = num_blocks, 
+        num_refinement_blocks = num_refinement_blocks,
+        heads = heads,
+        ffn_expansion_factor = ffn_expansion_factor,
+        bias = bias,
+        LayerNorm_type = LayerNorm_type,   ## Other option 'BiasFree'
+        )
+        self.condition = CPEN2(channels = ms_channels, n_feats=64, n_encoder_res=n_encoder_res)
 
         self.denoise_cz= denoise(n_feats=64, 
                                  n_denoise_res=n_denoise_res,
@@ -51,28 +55,15 @@ class DiffIRS2(nn.Module):
                                  linear_start= linear_start,
                                  linear_end= linear_end, 
                                  timesteps = timesteps)
-        
-        self.denoise_sz= denoise(n_feats=64, 
-                                 n_denoise_res=n_denoise_res,
-                                 timesteps=timesteps)
-        
-        self.diffusion_sz = DDPM(denoise=self.denoise_sz, 
-                                 condition=self.condition,
-                                 n_feats=64,
-                                 linear_start= linear_start,
-                                 linear_end= linear_end, 
-                                 timesteps = timesteps)
 
-
-    def forward(self, img, IPRS1=None):
+    def forward(self, ms, pan, IPRS1=None):
         if self.training:
-            IPRS2, pred_IPR_list=self.diffusion_cz(img,IPRS1)
-            sr = self.G(img, IPRS2)
-
+            IPRS2, pred_IPR_list=self.diffusion_cz(ms, pan, IPRS1)
+            sr = self.G(ms, pan, IPRS2)
             return sr, pred_IPR_list
         else:
-            IPRS2 = self.diffusion_cz(img)
-            sr = self.G(img, IPRS2)
+            IPRS2 = self.diffusion_cz(ms, pan)
+            sr = self.G(ms, pan, IPRS2)
             return sr
 
 def to_3d(x):
@@ -96,8 +87,6 @@ class BiasFree_LayerNorm(nn.Module):
     def forward(self, x):
         sigma = x.var(-1, keepdim=True, unbiased=False)
         return x / torch.sqrt(sigma+1e-5) * self.weight
-
-
 
 class FeedForward(nn.Module):
     def __init__(self, dim, ffn_expansion_factor, bias):
@@ -197,18 +186,15 @@ class Attention(nn.Module):
 
 #         return [x,k_v]
 
-
 class OverlapPatchEmbed(nn.Module):
     def __init__(self, in_c=3, embed_dim=48, bias=False):
         super(OverlapPatchEmbed, self).__init__()
 
         self.proj = nn.Conv2d(in_c, embed_dim, kernel_size=3, stride=1, padding=1, bias=bias)
-
     def forward(self, x):
         x = self.proj(x)
 
         return x
-
 
 class Downsample(nn.Module):
     def __init__(self, n_feat):
@@ -216,7 +202,6 @@ class Downsample(nn.Module):
 
         self.body = nn.Sequential(nn.Conv2d(n_feat, n_feat//2, kernel_size=3, stride=1, padding=1, bias=False),
                                   nn.PixelUnshuffle(2))
-
     def forward(self, x):
         return self.body(x)
 
@@ -226,17 +211,15 @@ class Upsample(nn.Module):
 
         self.body = nn.Sequential(nn.Conv2d(n_feat, n_feat*2, kernel_size=3, stride=1, padding=1, bias=False),
                                   nn.PixelShuffle(2))
-
     def forward(self, x):
         return self.body(x)
 
-
 class CPEN2(nn.Module):
-    def __init__(self, n_feats = 64, n_encoder_res = 6):
+    def __init__(self, channels = 8, n_feats = 64, n_encoder_res = 6):
         super(CPEN2, self).__init__()
  
         # scale == 4    in worldview3, 257ch -> 64ch
-        E1=[nn.Conv2d(8*16 + 1*16, n_feats, kernel_size=3, padding=1),
+        E1=[nn.Conv2d(channels*16 + 1*16, n_feats, kernel_size=3, padding=1),
             nn.LeakyReLU(0.1, True)]
         E2=[
             ResBlock(
@@ -363,12 +346,10 @@ class Upsampler(nn.Sequential):
             if act: m.append(act())
         else:
             raise NotImplementedError
-
         super(Upsampler, self).__init__(*m)
 
 def default_conv(in_channels, out_channels, kernel_size, bias=True):
     return nn.Conv2d(in_channels, out_channels, kernel_size, padding=(kernel_size//2), bias=bias)
-
 
 def uniform_on_device(r1, r2, shape, device):
     return (r1 - r2) * torch.rand(*shape, device=device) + r2
@@ -407,7 +388,6 @@ class DDPM(nn.Module):
 
         self.register_schedule(given_betas=given_betas, beta_schedule=beta_schedule, timesteps=timesteps,
                                linear_start=linear_start, linear_end=linear_end, cosine_s=cosine_s)
-
 
     def register_schedule(self, given_betas=None, beta_schedule="linear", timesteps=1000,
                           linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3):
@@ -522,7 +502,6 @@ class DDPM(nn.Module):
         return (extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
                 extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise)
 
-
     def p_losses(self, x_start, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
@@ -540,29 +519,60 @@ class DDPM(nn.Module):
 
 
         return model_out, target
+    # def forward(self, img,x=None):
+    #     # b, c, h, w, device, img_size, = *x.shape, x.device, self.image_size
+    #     # assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
+    #     device = self.betas.device
+    #     b=img.shape[0]
+    #     if self.training:
+    #         pred_IPR_list=[]
+    #         t= torch.full((b,), self.num_timesteps-1,  device=device, dtype=torch.long)
+    #         noise = torch.randn_like(x)
+    #         x_noisy = self.q_sample(x_start=x, t=t, noise=noise)
+    #         IPR = x_noisy
+    #         c = self.condition(img)
+            
+    #         for i in reversed(range(0, self.num_timesteps)):
+    #             IPR, predicted_noise = self.p_sample(IPR, torch.full((b,), i,  device=device, dtype=torch.long), c,
+    #                             clip_denoised=self.clip_denoised)
+    #             pred_IPR_list.append(IPR)
+    #         return IPR,pred_IPR_list
+    #     else:       
+    #         shape=(img.shape[0],self.channels*4)
+    #         x_noisy = torch.randn(shape, device=device)
+    #         c = self.condition(img)
+    #         IPR = x_noisy
+    #         for i in reversed(range(0, self.num_timesteps)):
+    #             IPR, _ = self.p_sample(IPR, torch.full((b,), i,  device=device, dtype=torch.long), c,
+    #                             clip_denoised=self.clip_denoised)
+    #         return IPR
 
-    def forward(self, img,x=None):
+    def forward(self, ms, pan ,x=None):
         # b, c, h, w, device, img_size, = *x.shape, x.device, self.image_size
         # assert h == img_size and w == img_size, f'height and width of image must be {img_size}'
         device = self.betas.device
-        b=img.shape[0]
+        b=ms.shape[0]
         if self.training:
             pred_IPR_list=[]
             t= torch.full((b,), self.num_timesteps-1,  device=device, dtype=torch.long)
             noise = torch.randn_like(x)
             x_noisy = self.q_sample(x_start=x, t=t, noise=noise)
             IPR = x_noisy
-            c = self.condition(img)
-            
+
+            c = self.condition(ms, pan)
+            # 추가
+            c = c[0]
             for i in reversed(range(0, self.num_timesteps)):
                 IPR, predicted_noise = self.p_sample(IPR, torch.full((b,), i,  device=device, dtype=torch.long), c,
                                 clip_denoised=self.clip_denoised)
                 pred_IPR_list.append(IPR)
             return IPR,pred_IPR_list
         else:       
-            shape=(img.shape[0],self.channels*4)
+            shape=(ms.shape[0],self.channels*4)
             x_noisy = torch.randn(shape, device=device)
-            c = self.condition(img)
+            c = self.condition(ms, pan)
+
+            c = c[0]
             IPR = x_noisy
             for i in reversed(range(0, self.num_timesteps)):
                 IPR, _ = self.p_sample(IPR, torch.full((b,), i,  device=device, dtype=torch.long), c,
@@ -649,40 +659,59 @@ if __name__ == '__main__':
     from DiffIRS2 import DiffIRS2
     from psnr import calculate_psnr
     from torchvision.utils import save_image
-    from dataloader import Diff_Dataloader
     from torch.nn import DataParallel
 
-    # stage2에 들어오기 전 stage1을 거치기 위함
-    device = 'cuda'
-    pre_model = DiffIRS1().to(device)
-    model = DiffIRS2().to(device)
+    # # stage2에 들어오기 전 stage1을 거치기 위함
+    # device = 'cuda'
+    # pre_model = DiffIRS1().to(device)
+    # model = DiffIRS2().to(device)
 
-    # stage1에 내가 원하는 weight를 씌워서 CPEN 작동시킬 준비
-    weight_dir = '/home/ksp/Desktop/Diff/ckpt/test/checkpoint_epoch_191_EDSR.pth'
-    checkpoint = torch.load(weight_dir)
-    # print(checkpoint['model_state_dict'].keys())
-    state_dict = checkpoint['model_state_dict']
-    # 'module.G'에 해당하는 키들을 필터링
-    new_state_dict = {}
-    for (key,val) in state_dict.items():
-        if key.startswith('module.G'):
-            # print(type(key))
-            key = key.replace('module.G.', '')
-            new_state_dict[key]= val
+    # # stage1에 내가 원하는 weight를 씌워서 CPEN 작동시킬 준비
+    # weight_dir = '/home/ksp/Desktop/Diff/ckpt/test/checkpoint_epoch_191_EDSR.pth'
+    # checkpoint = torch.load(weight_dir)
+    # # print(checkpoint['model_state_dict'].keys())
+    # state_dict = checkpoint['model_state_dict']
+    # # 'module.G'에 해당하는 키들을 필터링
+    # new_state_dict = {}
+    # for (key,val) in state_dict.items():
+    #     if key.startswith('module.G'):
+    #         # print(type(key))
+    #         key = key.replace('module.G.', '')
+    #         new_state_dict[key]= val
 
-    print(new_state_dict.keys())
-    # module_G_keys = [key for key in state_dict.keys() if key.startswith('module.G')]
+    # print(new_state_dict.keys())
+    # # module_G_keys = [key for key in state_dict.keys() if key.startswith('module.G')]
 
-    # # 'module.G'에 속한 가중치들만 추출
-    # module_G_weights = {key: state_dict[key] for key in module_G_keys}
-    # # 주어진 dict_keys
+    # # # 'module.G'에 속한 가중치들만 추출
+    # # module_G_weights = {key: state_dict[key] for key in module_G_keys}
+    # # # 주어진 dict_keys
 
-    # # "module.G." 부분을 제거한 새로운 키 리스트 생성
-    # new_keys = [module_G_weights.key.replace('module.G.', '') for key in module_G_keys]
+    # # # "module.G." 부분을 제거한 새로운 키 리스트 생성
+    # # new_keys = [module_G_weights.key.replace('module.G.', '') for key in module_G_keys]
 
-    # 새로운 키 리스트 출력
-    # print(new_keys)
-    # print(module_G_weights.keys())
-    # S1
-    # pre_model.load_state_dict(checkpoint['model_state_dict'], strict=False)
-    # model.G = pre_model.G
+    # # 새로운 키 리스트 출력
+    # # print(new_keys)
+    # # print(module_G_weights.keys())
+    # # S1
+    # # pre_model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    # # model.G = pre_model.G
+
+
+    condition = CPEN2(n_feats=64, n_encoder_res=4)
+
+    denoise_cz= denoise(n_feats=64, 
+                                n_denoise_res=1,
+                                timesteps=4)
+    
+    diffusion_cz = DDPM(denoise=denoise_cz, 
+                                condition=condition,
+                                n_feats=64,
+                                linear_start= 0.1,
+                                linear_end= 0.99, 
+                                timesteps = 50)
+    h,w = 64,64
+    ms = torch.rand(1,8,h*4,w*4)   # B C H W
+    pan = torch.rand(1,1,h*4,w*4)
+    IPRS1 = torch.rand(1,256)     # B C 
+
+    ipr, pred_ipr = diffusion_cz(ms, pan, IPRS1)

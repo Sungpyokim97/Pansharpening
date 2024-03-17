@@ -13,7 +13,7 @@ from DiffIRS1 import DiffIRS1
 from DiffIRS2 import DiffIRS2
 from psnr import calculate_psnr, calculate_ssim
 from torchvision.utils import save_image
-from dataloader import Diff_Dataloader
+# from dataloader import Diff_Dataloader
 from torch.nn import DataParallel
 
 
@@ -51,9 +51,17 @@ def initialize_model(types, device, learning_rate, start_epoch, ckpt_dir, weight
             model = DataParallel(model)
 
     criterion = torch.nn.L1Loss()
+    # G의 파라미터
+    params_G = model.module.G.parameters()
+
+    # 나머지 층의 파라미터
+    params_else = []
+    for p in model.parameters():
+        if p not in params_G:
+            params_else.append(p)
     params = [
-        {'params': model.module.diffusion.parameters(), 'lr': learning_rate},  # 일반 학습률 적용
-        {'params': model.module.G.parameters(), 'lr': learning_rate*0.01}
+        {'params': params_else, 'lr': learning_rate},  # 일반 학습률 적용
+        {'params': params_G, 'lr': learning_rate*0.01}
     ]
     optimizer = Adam(params)
     if start_epoch > 1:
