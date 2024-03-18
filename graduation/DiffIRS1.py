@@ -108,12 +108,12 @@ class Attention(nn.Module):
         q = torch.nn.functional.normalize(q, dim=-1)
         k = torch.nn.functional.normalize(k, dim=-1)
 
-        # attn = (q @ k.transpose(-2, -1)) * self.temperature
-        attn = (q.transpose(-2, -1) @ k)
+        attn = (q @ k.transpose(-2, -1)) * self.temperature
+        # attn = (q.transpose(-2, -1) @ k)
         attn = attn.softmax(dim=-1)
 
-        # out = (attn @ v)
-        out = (v @ attn)
+        out = (attn @ v)
+        # out = (v @ attn)
         
         out = rearrange(out, 'b head c (h w) -> b (head c) h w', head=self.num_heads, h=h, w=w)
 
