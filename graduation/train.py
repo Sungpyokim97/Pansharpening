@@ -13,14 +13,15 @@ from PIL import Image
 import numpy as np
 from DiffIRS1 import DiffIRS1
 from DiffIRS2 import DiffIRS2
-from mspanmixer import Simplemixer, PGCU
-from psnr import calculate_psnr
+from MSDCNN.MSDCNN import MSDCNN
+from mspanmixer import PGCU
 from torchvision.utils import save_image
 from einops import rearrange, reduce, repeat
 from cvt2rgb_save import rgb_save
 # from dataloader import WV3_PS_Dataloader
 from dataloader_h5 import WV3_PS_Dataloader, QB_PS_Dataloader, GF2_PS_Dataloader
 from evaluate import analysis_accu
+from loss import SAMLoss
 
 # 모델, 손실 함수, 옵티마이저 초기화
 def initialize_model(types, dataset, device, learning_rate, start_epoch, ckpt_dir, ckpt_path=None):
@@ -40,8 +41,8 @@ def initialize_model(types, dataset, device, learning_rate, start_epoch, ckpt_di
         if torch.cuda.device_count() > 1:
             print(f"Using {torch.cuda.device_count()} GPUs for DataParallel.")
             model = DataParallel(model)
-    elif types == 'SimpleMixer':
-        model = Simplemixer(ms_channels=ms_channels,pan_channels=1).to(device)
+    elif types == 'MSDCNN':
+        model = MSDCNN(spectral_num = ms_channels).to(device)
         if torch.cuda.device_count() > 1:
             print(f"Using {torch.cuda.device_count()} GPUs for DataParallel.")
             model = DataParallel(model)
@@ -52,8 +53,9 @@ def initialize_model(types, dataset, device, learning_rate, start_epoch, ckpt_di
             model = DataParallel(model)
 
     #loss 추가 해야할수도>???
-    criterion = torch.nn.MSELoss()
-    # criterion = torch.nn.L1Loss()
+    # criterion = torch.nn.MSELoss()
+    criterion_l1 = torch.nn.L1Loss()
+    criterion_sam = SAMLoss()
     if types == 'DiffIRS2':
         # G의 파라미터
         params_G = model.module.G.parameters()
@@ -79,10 +81,11 @@ def initialize_model(types, dataset, device, learning_rate, start_epoch, ckpt_di
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         print(f'loading checkpoint from {start_epoch-1}')
+        start_epoch = 1
     else:
         pass
 
-    return model, criterion, optimizer, start_epoch
+    return model, {'l1':criterion_l1, 'sam':criterion_sam}, optimizer, start_epoch
 
 # Training 루프
 def train_model(config_path, mode):
@@ -140,12 +143,14 @@ def train_model(config_path, mode):
         
         # lr = optimizer.param_groups[0]['lr']  
         T = config.epochs 
-        lr_s = 1*(0.1**4)
-        lr_e = 1*(0.1**7)
+        lr_s = 2*(0.1**4)
+        lr_e = 1*(0.1**5)
         lr = optimizer.param_groups[0]['lr'] = ((lr_s-lr_e)/2)*np.cos(np.pi/T*epoch) + (lr_s+lr_e)/2    
         print(f'learning late : {lr:.7f}')
         model.train()
         running_loss = 0.0
+        running_l1_loss = 0.0
+        running_sam_loss = 0.0
         running_diff_loss = 0.0
         running_recon_loss = 0.0
         for data_dict  in tqdm(train_loader, desc=f"Epoch {epoch+1}/{config.epochs}", unit="batch"):
@@ -183,31 +188,40 @@ def train_model(config_path, mode):
                 R = 0.2
                 loss = R* diff_loss + (1-R)* recon_loss
             else:
-                loss = criterion(output_for_loss, mspan)
-
+                l1_loss = criterion['l1'](output_for_loss, mspan)
+                sam_loss = criterion['sam'](output_for_loss, mspan)
+                loss = l1_loss + sam_loss
+ 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             running_loss += loss.item()
+            running_l1_loss += l1_loss.item()
+            running_sam_loss += sam_loss.item()
             if config.types == 'DiffIRS2':
                 running_diff_loss += diff_loss.item()
                 running_recon_loss += recon_loss.item()
             
-            save_dir = '/home/ksp/Pansharpening/graduation/saveimgtest'
-
-            stack_pan = rearrange(pan[:,[0,0,0,0],...], 'b c h w -> c (b h) w')
+            save_dir = os.path.join(config.saveimg_dir, 'saveimgtest', config.dataset)
+            
+            stack_pan = rearrange(pan[:,[0]*mspan.shape[1],...], 'b c h w -> c (b h) w')
             stack_mspan = rearrange(mspan, 'b c h w -> c (b h) w')
             stack_output = rearrange(output_for_loss, 'b c h w -> c (b h) w')
-            stack_gt_minus_ms = rearrange(mspan-lms, 'b c h w -> c (b h) w') 
+            stack_gt_minus_out = rearrange(mspan-output_for_loss, 'b c h w -> c (b h) w') 
             
-            compareset_img = torch.concat([stack_mspan, stack_output, stack_pan,stack_gt_minus_ms], dim = 2)
-            rgb_save(compareset_img, img_scale= 2**11-1, save_dir=save_dir)
+            compareset_img = torch.concat([stack_mspan, stack_output, stack_pan,stack_gt_minus_out], dim = 2)
+            if config.dataset == 'gf2':
+                rgb_save(compareset_img, img_scale= 2**10-1, save_dir=save_dir)
+            else:
+                rgb_save(compareset_img, img_scale= 2**11-1, save_dir=save_dir)
 
         avg_train_loss = running_loss / len(train_loader)
+        avg_l1_loss = running_l1_loss / len(train_loader)
+        avg_sam_loss = running_sam_loss / len(train_loader)
         avg_diff_loss = running_diff_loss / len(train_loader)
         avg_recon_loss = running_recon_loss / len(train_loader)
-        print(f"Epoch [{epoch+1}/{config.epochs}], Train Loss: {avg_train_loss:.4f}, Diff Loss : {avg_diff_loss:.4f}, Rcon Loss : {avg_recon_loss:.4f}")
+        print(f"Epoch [{epoch+1}/{config.epochs}], Train Loss: {avg_train_loss:.6f}, L1 Loss:{avg_l1_loss:.6f}, SAM Loss:{avg_sam_loss:.6f}, Diff Loss : {avg_diff_loss:.6f}, Rcon Loss : {avg_recon_loss:.4f}")
 
         # Validation loop
         model.eval() 
@@ -215,6 +229,7 @@ def train_model(config_path, mode):
         total_sam = 0.0
         total_ergas = 0.0
         total_cc = 0.0
+        total_channel_psnr = [0.0]*8
         image_count = 0
         with torch.no_grad():
             for i, data_dict in enumerate(test_loader):
@@ -231,20 +246,25 @@ def train_model(config_path, mode):
                     outputs = model(pan, lms)
 
 
-                save_dir = '/home/ksp/Pansharpening/graduation/saveimgtestval'
-                stack_pan = rearrange(pan[:,[0,0,0,0],...], 'b c h w -> c (b h) w')
+                save_dir = os.path.join('/home/ksp/Pansharpening/crossattention/saveimgtestval',config.dataset)
+                stack_pan = rearrange(pan[:,[0]*mspan.shape[1],...], 'b c h w -> c (b h) w')
                 stack_mspan = rearrange(mspan, 'b c h w -> c (b h) w')
                 stack_output = rearrange(outputs, 'b c h w -> c (b h) w')
-                stack_gt_minus_ms = rearrange(mspan-lms, 'b c h w -> c (b h) w') 
+                stack_gt_minus_out = rearrange(mspan-outputs, 'b c h w -> c (b h) w') 
                 
-                compareset_img = torch.concat([stack_mspan, stack_output, stack_pan, stack_gt_minus_ms], dim = 2)
-                rgb_save(compareset_img, img_scale= 2**11-1, save_dir=save_dir)
+                compareset_img = torch.concat([stack_mspan, stack_output, stack_pan, stack_gt_minus_out], dim = 2)
+                if config.dataset == 'gf2':
+                    rgb_save(compareset_img, img_scale= 2**10-1, save_dir=save_dir)
+                else:
+                    rgb_save(compareset_img, img_scale= 2**11-1, save_dir=save_dir)
 
                 metric_dict = analysis_accu(mspan, outputs, ratio=4, dim_cut=0, choices = 5)
                 total_psnr += metric_dict['PSNR']
                 total_sam += metric_dict['SAM']
                 total_ergas += metric_dict['ERGAS']
                 total_cc += metric_dict['CC']
+                for i in range(8):
+                    total_channel_psnr[i] += metric_dict['PSNR_C'][i]
                 
                 # 이미지 저장 로직
                 # save_path = os.path.join(config.result_dir, f'{config.types}_result_epoch_{epoch}_img_{i}.png')
@@ -257,8 +277,9 @@ def train_model(config_path, mode):
         avg_sam = total_sam / image_count
         avg_ergas = total_ergas / image_count
         avg_cc = total_cc / image_count
+        avg_channel_psnr = [psnr/image_count for psnr in total_channel_psnr]
         print(f"Epoch [{epoch+1}/{config.epochs}], Validation PSNR: {avg_psnr:.4f} SAM: {avg_sam:.4f} ERGAS: {avg_ergas:.4f} CC: {avg_cc:.4f}")
-        
+        print(f"Epoch [{epoch+1}/{config.epochs}], Channel PSNR: {avg_channel_psnr}")
         writer.add_scalar('Learning_rate/Train', lr, epoch)
         writer.add_scalar('Loss/Train', avg_train_loss, epoch)
         writer.add_scalar('PSNR/Validation', avg_psnr, epoch)
@@ -307,6 +328,7 @@ class Config:
         self.root = parser.get('common', 'root')
         self.data_dir = parser.get('common', 'data_dir')
         self.dataset = parser.get('common', 'dataset')
+        
         if mode =='train_S1' or mode =='train_S2':
             self.types = parser.get(stage,'types')
             self.ckpt_dir = parser.get(stage, 'ckpt_dir')

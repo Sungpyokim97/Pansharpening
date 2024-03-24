@@ -14,7 +14,7 @@ class ResBlock(nn.Module):
     def __init__(self, conv, n_feats, kernel_size, act=nn.LeakyReLU(), res_scale=1):
         super(ResBlock, self).__init__()
         m = []
-        for _ in range(50):
+        for _ in range(8):
             m.append(conv(n_feats, n_feats, kernel_size))
             if act is not None:
                 m.append(act)
@@ -130,21 +130,54 @@ class PGCU(nn.Module):
         return out
 
 #simple only concat
-class Simplemixer(nn.Module):
-    def __init__(self, ms_channels, pan_channels):
-        super(Simplemixer, self).__init__()
+class Simple_mixer(nn.Module):
+    def __init__(self, ms_channels):
+        super(Simple_mixer, self).__init__()
 
         self.res = ResBlock(
-                default_conv, n_feats = ms_channels+pan_channels, kernel_size=3
+                default_conv, n_feats = ms_channels*2, kernel_size=3
             )
-        self.conv = default_conv(ms_channels+pan_channels,ms_channels, kernel_size=3)
+        self.conv = default_conv(ms_channels*2,ms_channels, kernel_size=3)
+        # self.conv1x1 = nn.Conv2d()
 
     def forward(self, pan, ms):
-        x = torch.cat((ms, pan), dim=1)
+        if pan.shape[1] == 1:
+            pan_expand = pan[:,[0]*ms.shape[1],...]
+        else:
+            pan_expand = pan
+        x = torch.cat((ms, pan_expand), dim=1)
         x = self.res(x)
         x = self.conv(x)
 
         return x
+class Channel_mixer(nn.Module):
+    def __init__(self, ms_channels):
+        super(Channel_mixer, self).__init__()
+        self.linear_pan = nn.Sequential(
+            nn.Linear(ms_channels * 4, ms_channels * 4),
+            nn.LeakyReLU(0.1, True),
+            nn.Linear(ms_channels * 4, ms_channels),
+        )
+        self.linear_ms = nn.Sequential(
+            nn.Linear(ms_channels * 4, ms_channels * 4),
+            nn.LeakyReLU(0.1, True),
+            nn.Linear(ms_channels * 4, ms_channels),
+        )
+        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
+        self.maxpool = nn.AdaptiveMaxPool2d((1,1))
+    def forward(self, pan, ms):
+        if pan.shape[1] == 1:
+            pan_extend = pan[:,[0]*ms.shape[1],...]
+        else:
+            pan_extend = pan
+        pan_concat = torch.cat((self.maxpool(pan_extend), self.avgpool(pan_extend)), dim=1)
+        ms_concat = torch.cat((self.maxpool(ms), self.avgpool(ms)), dim=1)
+        concat = torch.cat((pan_concat, ms_concat), dim=1).squeeze(-1).squeeze(-1)
+        ccpan = rearrange(self.linear_pan(concat), 'b c -> b c 1 1')
+        ccms = rearrange(self.linear_ms(concat), 'b c -> b c 1 1')
+        panout = pan*ccpan + pan
+        msout = ms*ccms + ms
+        return panout, msout
 
 if __name__ == '__main__':
     h, w = [32, 32]
@@ -152,9 +185,9 @@ if __name__ == '__main__':
     pan = torch.rand(5, 1, h*4, w*4)
     gt = torch.rand(5, 8, h*4, w*4)
     feat = torch.rand(5, 64, 64, 64)
-    simple = Simplemixer(8,1)
+    simple = Channel_mixer(8)
     pgcu = PGCU(Channel=8, Vec=128)
     out_simple = simple(pan, ms)
     out_pgcu = pgcu(pan, ms)
-    print(out_simple.shape, out_pgcu.shape)
+    print(out_simple[0].shape, out_pgcu.shape)
 #complex

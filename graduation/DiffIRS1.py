@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numbers
 from einops import rearrange
+from MSDCNN.MSDCNN import MSDCNN
 import mspanmixer as mixer
 import math
 
@@ -11,9 +12,9 @@ class DiffIRS1(nn.Module):
         n_encoder_res=4,         
         ms_channels=8,
         pan_channels=1, 
-        dim = 24,
+        dim = 16,
         # num_blocks = [4,6,6,8],
-        num_blocks = [4,1,1,1],
+        num_blocks = [2,1,1,1],
         num_refinement_blocks = 4,
         heads = [1,2,4,8],
         ffn_expansion_factor = 2.66,
@@ -80,6 +81,8 @@ class FeedForward(nn.Module):
         x = self.project_out(x)
         return x
     
+
+#modified for channel swin
 class Attention(nn.Module):
     def __init__(self, dim, num_heads, bias):
         super(Attention, self).__init__()
@@ -97,7 +100,9 @@ class Attention(nn.Module):
         k_v=self.kernel(k_v).view(-1,c*2,1,1)
         k_v1,k_v2=k_v.chunk(2, dim=1)
         
-        x = x*k_v1+k_v2  
+        x = x*k_v1+k_v2
+
+
         qkv = self.qkv_dwconv(self.qkv(x))
         q,k,v = qkv.chunk(3, dim=1)   
         
@@ -132,8 +137,8 @@ class TransformerBlock(nn.Module):
     def forward(self, y):
         x = y[0]
         k_v=y[1]
-        x = x + self.attn(self.norm1(x),k_v)
         x = x + self.ffn(self.norm2(x),k_v)
+        x = x + self.attn(self.norm1(x),k_v)
 
         return [x,k_v]
 
@@ -371,10 +376,11 @@ class DIRformer(nn.Module):
 
         super(DIRformer, self).__init__()
 
-        # self.mixer = mixer.Simplemixer(ms_channels, pan_channels)
-        self.mixer = mixer.PGCU(ms_channels, Vec = 256)
+        self.mixer = MSDCNN(ms_channels)
+        # self.mixer = mixer.PGCU(ms_channels, Vec = 256)
+        self.channel_mixer = mixer.Channel_mixer(ms_channels)
         
-
+        # self.layernorm = nn.LayerNorm()
         self.patch_embed = OverlapPatchEmbed(in_c=ms_channels, embed_dim=dim)
         
         self.encoder_level1 = nn.Sequential(*[TransformerBlock(dim=dim, num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor, bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[0])])
@@ -384,7 +390,7 @@ class DIRformer(nn.Module):
         
         self.down2_3 = Downsample(int(dim*2**1)) ## From Level 2 to Level 3
         self.encoder_level3 = nn.Sequential(*[TransformerBlock(dim=int(dim*2**2), num_heads=heads[2], ffn_expansion_factor=ffn_expansion_factor, bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[2])])
-
+        
         self.down3_4 = Downsample(int(dim*2**2)) ## From Level 3 to Level 4
         self.latent = nn.Sequential(*[TransformerBlock(dim=int(dim*2**3), num_heads=heads[3], ffn_expansion_factor=ffn_expansion_factor, bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[3])])
         
@@ -400,14 +406,14 @@ class DIRformer(nn.Module):
         self.decoder_level1 = nn.Sequential(*[TransformerBlock(dim=int(dim*2**1), num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor, bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[0])])
         self.refinement = nn.Sequential(*[TransformerBlock(dim=int(dim*2**1), num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor, bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_refinement_blocks)])
         self.output = nn.Conv2d(int(dim*2**1), ms_channels, kernel_size=3, stride=1, padding=1, bias=bias)
-
+        self.relu = nn.ReLU()
     def forward(self, ms, pan ,k_v):
 
         ms_b, ms_c, ms_h, ms_w = ms.shape
         pan_b, pan_c, pan_h, pan_w = pan.shape
-        exp_list = [0]*ms_c
-        pan_expand = pan[:,exp_list,...]
-        ms_pan_simplemixed = self.mixer(pan, ms) + ms + pan_expand
+        # exp_list = [0]*ms_c
+        # pan_expand = pan[:,exp_list,...]
+        ms_pan_simplemixed = self.mixer(pan, ms) + self.channel_mixer(pan, ms)[0]
         inp_enc_level1 = self.patch_embed(ms_pan_simplemixed)
 
         out_enc_level1,_ = self.encoder_level1([inp_enc_level1,k_v])
@@ -438,9 +444,8 @@ class DIRformer(nn.Module):
         out_dec_level1,_ = self.refinement([out_dec_level1,k_v])
 
         out_dec_level1 = self.output(out_dec_level1) + ms_pan_simplemixed
-
-
-        return out_dec_level1
+        out = self.relu(out_dec_level1)
+        return out
 
 if __name__ == '__main__':
     h, w = [64, 64]

@@ -263,9 +263,9 @@ n_digits = 6
 
 def analysis_accu(img_base, img_out, ratio, flag_cut_bounds=False, dim_cut=21, choices=4):
     img_base = img_base.squeeze()
-    img_base.permute(2,0,1)
+    img_base = img_base.permute(1, 2, 0)
     img_out = img_out.squeeze()
-    img_out.permute(2,0,1)
+    img_out = img_out.permute(1, 2, 0)
     if flag_cut_bounds:
         img_base = img_base[dim_cut - 1:-dim_cut, dim_cut - 1:-dim_cut, :]  #:
         img_out = img_out[dim_cut - 1:-dim_cut, dim_cut - 1:-dim_cut, :]  #:
@@ -309,7 +309,10 @@ def analysis_accu(img_base, img_out, ratio, flag_cut_bounds=False, dim_cut=21, c
 
     # PSNR
     PSNR = 10 * torch.log10(math.pow(1.0, 2) / torch.mean((img_out-img_base)**2, [0, 1]))
-
+    channel_psnr = [0.0]*8
+    for i in range(img_out.shape[2]): 
+        psnr_c = 10 * torch.log10(math.pow(1.0, 2) / torch.mean((img_out[:,:,i]-img_base[:,:,i])**2, [0, 1]))
+        channel_psnr[i]= torch.mean(psnr_c)
     # SSIM
     # img_base = img_base.permute(2, 0, 1)
     # img_out = img_out.permute(2, 0, 1)
@@ -328,6 +331,7 @@ def analysis_accu(img_base, img_out, ratio, flag_cut_bounds=False, dim_cut=21, c
     # index[4, 0] = ERGAS
 
     PSNR = torch.mean(PSNR)
+
     # SSIM = torch.mean(SSIM)
     # q2n_index = np.mean(q2n_index)
 
@@ -339,7 +343,7 @@ def analysis_accu(img_base, img_out, ratio, flag_cut_bounds=False, dim_cut=21, c
         C3 = torch.sum(torch.sum(img_base ** 2, 0), 0) - h * w * (torch.mean(torch.mean(img_base, 0), 0) ** 2)
         CC = C1 / ((C2 * C3) ** 0.5)
         CC = torch.mean(CC)
-        return {'SAM': SAM, 'ERGAS': ERGAS, 'PSNR': PSNR, 'CC': CC}  # , q2n_index
+        return {'SAM': SAM, 'ERGAS': ERGAS, 'PSNR': PSNR, 'CC': CC, 'PSNR_C' : channel_psnr}  # , q2n_index
 
     return {'SAM': SAM, 'ERGAS': ERGAS, 'PSNR': PSNR, }
 
