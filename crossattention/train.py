@@ -13,7 +13,7 @@ from PIL import Image
 import numpy as np
 from CA_S1 import DiffIRS1
 from CA_S2 import DiffIRS2
-from MSDCNN.MSDCNN import MSDCNN
+from OtherModels import MSDCNN, Restormer, FusionNet
 from torchvision.utils import save_image
 from einops import rearrange, reduce, repeat
 from cvt2rgb_save import rgb_save
@@ -45,6 +45,18 @@ def initialize_model(types, dataset, device, learning_rate, start_epoch, ckpt_di
         if torch.cuda.device_count() > 1:
             print(f"Using {torch.cuda.device_count()} GPUs for DataParallel.")
             model = DataParallel(model)
+    elif types == 'FusionNet':
+        model = FusionNet(spectral_num = ms_channels).to(device)
+        if torch.cuda.device_count() > 1:
+            print(f"Using {torch.cuda.device_count()} GPUs for DataParallel.")
+            model = DataParallel(model)
+    
+    elif types == 'Restomer':
+        model = Restormer(ms_channels = ms_channels).to(device)
+        if torch.cuda.device_count() > 1:
+            print(f"Using {torch.cuda.device_count()} GPUs for DataParallel.")
+            model = DataParallel(model)
+    
 
     #loss 추가 해야할수도>???
     # criterion = torch.nn.MSELoss()
@@ -203,7 +215,7 @@ def train_model(config_path, mode):
             stack_output = rearrange(output_for_loss, 'b c h w -> c (b h) w')
             stack_gt_minus_out = rearrange(mspan-output_for_loss, 'b c h w -> c (b h) w') 
             
-            compareset_img = torch.concat([stack_mspan, stack_output, stack_pan,stack_gt_minus_out], dim = 2)
+            compareset_img = torch.concat([stack_mspan, stack_output, stack_pan, stack_gt_minus_out], dim = 2)
             if config.dataset == 'gf2':
                 rgb_save(compareset_img, img_scale= 2**10-1, save_dir=save_dir, file_name = f'testimg.png')
             else:
