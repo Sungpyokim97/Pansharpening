@@ -4,8 +4,7 @@ from test import test_model
 # from test import test_model
 
 train_S1_settings = '/home/ksp/Pansharpening/crossattention/cross_S1_settings.cfg'
-train_S2_settings = '/home/ksp/Desktop/EDSR_CS_diff/S2_settings.cfg'
-    
+
 def main():
     # mode = 'test'
     mode = 'train_S1'
@@ -23,6 +22,6 @@ def main():
         
 if __name__ == "__main__":
     import os
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    # os.environ['CUDA_VISIBLE_DEVICES'] = '0' 
 
     main()

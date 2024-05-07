@@ -13,7 +13,7 @@ from PIL import Image
 import numpy as np
 from CA_S1 import DiffIRS1
 from CA_S2 import DiffIRS2
-from OtherModels import MSDCNN, Restormer, FusionNet
+from OtherModels import MSDCNN, Restormer, FusionNet, UPNet
 from torchvision.utils import save_image
 from einops import rearrange, reduce, repeat
 from cvt2rgb_save import rgb_save
@@ -47,6 +47,11 @@ def initialize_model(types, dataset, device, learning_rate, start_epoch, ckpt_di
             model = DataParallel(model)
     elif types == 'FusionNet':
         model = FusionNet(spectral_num = ms_channels).to(device)
+        if torch.cuda.device_count() > 1:
+            print(f"Using {torch.cuda.device_count()} GPUs for DataParallel.")
+            model = DataParallel(model)
+    elif types == 'DCPNet':
+        model = UPNet(spectral_num = ms_channels).to(device)
         if torch.cuda.device_count() > 1:
             print(f"Using {torch.cuda.device_count()} GPUs for DataParallel.")
             model = DataParallel(model)
@@ -179,6 +184,8 @@ def train_model(config_path, mode):
                 IPRS1 = IPRS1[0]
                 outputs, pred_IPR_list = model(lms, pan, IPRS1=IPRS1)
                 IPRS2 = pred_IPR_list[-1]
+            elif config.types == 'DCPNet':
+                outputs, msup = model(pan, ms)
             else:
                 outputs = model(pan, lms)
             # loss = criterion(outputs, labels)
@@ -193,6 +200,10 @@ def train_model(config_path, mode):
                 sam_loss = criterion['sam'](output_for_loss, mspan)
                 R = 0.2
                 loss = R* diff_loss + (1-R)* (l1_loss + sam_loss)
+            elif config.types == 'DCPNet':
+                l1_loss1 = criterion['l1'](outputs, mspan)
+                l1_loss2 = criterion['l1'](msup, mspan)
+                loss = l1_loss1 + 0.5*l1_loss2                
             else:
                 l1_loss = criterion['l1'](output_for_loss, mspan)
                 sam_loss = criterion['sam'](output_for_loss, mspan)
@@ -203,8 +214,8 @@ def train_model(config_path, mode):
             optimizer.step()
 
             running_loss += loss.item()
-            running_l1_loss += l1_loss.item()
-            running_sam_loss += sam_loss.item()
+            # running_l1_loss += l1_loss.item()
+            # running_sam_loss += sam_loss.item()
             if config.types == 'DiffIRS2':
                 running_diff_loss += diff_loss.item()
             
@@ -247,6 +258,8 @@ def train_model(config_path, mode):
                 elif config.types == 'DiffIRS2':
                     # _, IPRS1 = model_S1(lms, pan, mspan)
                     outputs = model(lms, pan)
+                elif config.types == 'DCPNet':
+                    outputs, msup = model(pan, ms)
                 else:
                     outputs = model(pan, lms)
 

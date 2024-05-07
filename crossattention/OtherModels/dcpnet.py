@@ -10,7 +10,7 @@ import math
 from torchvision.ops import DeformConv2d
 # from UDL.pansharpening.models.UPNet.pytorch_ssim import ssim, _ssim
 import numpy as np
-import UDL.pansharpening.models.UPNet.SwinT as swin
+import OtherModels.SwinT as swin
 # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 from torchvision import transforms
 from einops import rearrange
@@ -367,7 +367,7 @@ class Fusion_net(nn.Module):
         return sr
 
 class UPNet(nn.Module):
-    def __init__(self, spectral_num, criterion):
+    def __init__(self, spectral_num, criterion=None):
         super(UPNet, self).__init__()
 
         self.spectral_num = spectral_num
@@ -387,24 +387,24 @@ class UPNet(nn.Module):
         sr = self.fusion_net(panf1, panf2, panf3, panf4, msf1, msf2, msf3, msf4)
         return sr, msup
 
-    def train_step(self, data, *args, **kwargs):
-        log_vars = {}
-        gt, lms, ms, pan = data['gt'].cuda(), data['lms'].cuda(), \
-                           data['ms'].cuda(), data['pan'].cuda()
+    # def train_step(self, data, *args, **kwargs):
+    #     log_vars = {}
+    #     gt, lms, ms, pan = data['gt'].cuda(), data['lms'].cuda(), \
+    #                        data['ms'].cuda(), data['pan'].cuda()
 
-        sr, msup = self(pan, ms)
+    #     sr, msup = self(pan, ms)
 
-        loss1 = self.criterion(sr, gt, *args, **kwargs)['loss']
-        loss2 = self.criterion(msup, gt, *args, **kwargs)['loss']
+    #     loss1 = self.criterion(sr, gt, *args, **kwargs)['loss']
+    #     loss2 = self.criterion(msup, gt, *args, **kwargs)['loss']
 
-        loss =  loss1 + 0.5*loss2
-        log_vars.update(loss=loss.item())
+    #     loss =  loss1 + 0.5*loss2
+    #     log_vars.update(loss=loss.item())
 
-        return {'loss': loss, 'log_vars': log_vars}
+    #     return {'loss': loss, 'log_vars': log_vars}
 
-    def val_step(self, data, *args, **kwargs):
-        gt, lms, ms, pan = data['gt'].cuda(), data['lms'].cuda(), \
-                           data['ms'].cuda(), data['pan'].cuda()
-        sr,msup = self(pan, ms)
+    # def val_step(self, data, *args, **kwargs):
+    #     gt, lms, ms, pan = data['gt'].cuda(), data['lms'].cuda(), \
+    #                        data['ms'].cuda(), data['pan'].cuda()
+    #     sr,msup = self(pan, ms)
 
-        return sr, gt
+    #     return sr, gt
